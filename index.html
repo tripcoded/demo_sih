@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Track My Bus — Amritsar</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    :root{--brand:#1b5e20;--accent:#1976d2;--muted:#f3f6f8}
+    body{margin:0;font-family:Inter,Segoe UI,Arial,sans-serif;background:linear-gradient(135deg,#f0f6fb,#eef5ee)}
+    header{background:var(--brand);color:#fff;padding:14px 18px;display:flex;align-items:center;gap:12px}
+    header img{height:38px;width:auto;border-radius:6px}
+    header h1{font-size:20px;margin:0}
+    .controls{display:flex;gap:12px;align-items:center;justify-content:center;padding:14px}
+    select,button{padding:10px 12px;border-radius:8px;border:1px solid #cfd8dc;font-size:15px}
+    button{background:var(--brand);color:#fff;border:none;cursor:pointer}
+    button:hover{opacity:.95}
+    #all-routes{width:92%;margin:6px auto 0;background:#fff;padding:12px;border-radius:10px;box-shadow:0 6px 16px rgba(0,0,0,.06)}
+    #all-routes h3{margin:0 0 8px 0;color:var(--accent)}
+    #all-routes ul{list-style:none;padding:0;margin:0;display:flex;flex-wrap:wrap;gap:8px}
+    .route-pill{background:var(--muted);padding:8px 12px;border-radius:999px;cursor:pointer;border:1px solid #e6eef0}
+    .route-pill:hover{background:#e6f3ea;transform:translateY(-3px);transition:all .2s}
+    #map{height:520px;width:92%;margin:18px auto;border-radius:12px;box-shadow:0 10px 28px rgba(0,0,0,.12);border:1px solid rgba(0,0,0,.06)}
+    #timeline-wrap{width:92%;margin:16px auto;display:flex;flex-direction:column;gap:12px}
+    .route-timeline{background:#fff;padding:10px;border-radius:12px;box-shadow:0 6px 16px rgba(0,0,0,.06)}
+    .route-title{font-weight:700;color:var(--brand);margin-bottom:8px}
+    .stops-row{display:flex;gap:12px;overflow:auto;padding:6px}
+    .stop-pill{min-width:140px;padding:8px;border-radius:8px;background:#f7fbf7;border:1px solid #e6eef0;display:flex;justify-content:space-between;align-items:center}
+    .stop-pill.active{background:linear-gradient(90deg,#e8f5e9,#ffffff);border-color:var(--accent);box-shadow:0 6px 12px rgba(0,0,0,.06)}
+    .eta{font-size:13px;color:#555}
+    #about{width:92%;margin:18px auto;padding:20px;border-radius:12px;background:linear-gradient(180deg,#fff,#fbfffb);box-shadow:0 6px 16px rgba(0,0,0,.06)}
+    .feature-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:12px}
+    .feature{background:#fff;padding:16px;border-radius:12px;position:relative;overflow:hidden;border:1px solid #eef6f2;cursor:pointer}
+    .feature .icon{font-size:30px;display:block;margin-bottom:8px}
+    .feature .more{position:absolute;left:0;right:0;bottom:-100%;background:var(--brand);color:white;padding:12px;text-align:center;transition:all .35s}
+    .feature:hover .more{bottom:0}
+    footer{background:var(--brand);color:#fff;padding:14px;text-align:center;margin-top:18px}
+    /* Popup style override */
+    .leaflet-popup-content-wrapper{box-shadow:0 10px 30px rgba(0,0,0,.25);font-size:14px}
+    /* small responsiveness tweaks */
+    @media (max-width:900px){ .stops-row{gap:8px} .stop-pill{min-width:120px} header h1{font-size:18px} }
+    /* Default (desktop) stays the same */
+
+/* Mobile adjustments */
+@media (max-width: 768px) {
+  header {
+    text-align: center;          /* center everything */
+    flex-direction: column;      /* stack title and animation */
+    align-items: center;
+  }
+
+  header h1 {
+    font-size: 20px;             /* smaller title on mobile */
+    margin: 10px 0;
+  }
+
+  .lottie-animation {
+    order: 2;                    /* force animation below title */
+    margin-top: 10px;
+    max-width: 150px;            /* shrink animation if needed */
+  }
+}
+
+  /* Footer responsive fix */
+@media (max-width: 768px) {
+  footer {
+    text-align: center;     /* center everything on small screens */
+    flex-direction: column; /* stack items if using flex */
+    align-items: center;
+    padding: 15px;
+  }
+
+  footer p {
+    font-size: 14px;        /* smaller footer text */
+    margin: 5px 0;
+  }
+}
+  
+  </style>
+  <script src="https://unpkg.com/@lottiefiles/lottie-player@latest/dist/lottie-player.js"></script>
+
+</head>
+<body>
+  <header>
+    
+    
+    <img src="bus.png" style="height:80px; width:auto; border-radius:8px; margin-right:12px;" id="logo">
+    <h1 style="margin:0; font-size:40px; font-weight:700; letter-spacing:1px;">Track My Bus — Amritsar</h1>
+    <lottie-player 
+    src="bus.json"
+    background="transparent"
+    speed="1"
+    style="width: 100%; height: 500px; margin: 0 auto; display: block;"
+    loop
+    autoplay>
+</lottie-player>
+  </header>
+
+  <!-- Controls -->
+  <div class="controls">
+    <label>From:
+      <select id="fromSelect"><option value="">-- choose --</option></select>
+    </label>
+    <label>To:
+      <select id="toSelect"><option value="">-- choose --</option></select>
+    </label>
+    <button id="trackBtn">Track</button>
+  </div>
+
+  <!-- All routes quick list -->
+  <div id="all-routes">
+    <h3>All Buses (click to auto-fill From/To)</h3>
+    <ul id="routesList"></ul>
+  </div>
+
+  <!-- Map -->
+  <div id="map"></div>
+
+  <!-- Timeline(s) -->
+  <div id="timeline-wrap"></div>
+
+  <!-- About -->
+  <section id="about">
+    <h2>About Track My Bus</h2>
+    <p>Track your bus anytime , anywhere- with all the details you need, right at your finger.</p>
+
+    <div class="feature-grid">
+      <div class="feature">
+        <div class="icon">⏱</div>
+        <div class="title">Estimated Arrival</div>
+        <div class="desc">Simple ETA model (demo) that updates as the bus moves between stops.</div>
+        <div class="more">A real time ETA system that calculates and continuously updates the estimated arrival time.</div>
+      </div>
+
+      <div class="feature">
+        <div class="icon">📍</div>
+        <div class="title">Map & Routes</div>
+        <div class="desc">Polylines show the bus path and markers show live position.</div>
+        <div class="more">Each bus have it's unique name and Polylines for easy understanding.</div>
+      </div>
+
+      <div class="feature">
+        <div class="icon">🧭</div>
+        <div class="title">Easy Search</div>
+        <div class="desc">Click a Option to auto-fill From/To, or pick manually then Track.</div>
+        <div class="more">A user-friendly transport serch and tracking system where users can either auto-fill or enter manually.</div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    Contact: +91 811279469 • bustracking_amritsar.25@.com • © 2025 Track My Bus
+  </footer>
+
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
