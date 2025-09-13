@@ -1,23 +1,13 @@
-// /* script.js — Rewritten core logic for Track My Bus
-//    - One marker per bus, one timeline per bus
-//    - Smooth movement along real roads (OSRM) with fallback to straight segments
-//    - ETA updates and "Arrived" marking when within threshold
-//    - Populate From/To dropdowns reliably
-//    - No old setInterval jumpers, no duplicate timelines/markers
-//    - Requires: Leaflet included in HTML, an element #map, selects #fromSelect & #toSelect,
-//      #trackBtn button, and #timeline-wrap container in HTML, and bus.png in same folder
-//    - Serve over http(s) (Live Server or GitHub Pages) for OSRM fetches to work. */
-
-
-// Ask notification permission on load
-
-if ("Notification" in window && Notification.permission !== "granted") {
-  Notification.requestPermission();
-}
-
-// Preload sound for notifications
-const notifySound = new Audio("notify.mp3"); // add a notify.mp3 in your project folder
-
+/* script.js — Rewritten core logic for Track My Bus
+   - One marker per bus, one timeline per bus
+   - Smooth movement along real roads (OSRM) with fallback to straight segments
+   - ETA updates and "Arrived" marking when within threshold
+   - Populate From/To dropdowns reliably
+   - No old setInterval jumpers, no duplicate timelines/markers
+   - Requires: Leaflet included in HTML, an element #map, selects #fromSelect & #toSelect,
+     #trackBtn button, and #timeline-wrap container in HTML, and bus.png in same folder
+   - Serve over http(s) (Live Server or GitHub Pages) for OSRM fetches to work.
+*/
 
 /* ===========================
    Configuration & Routes
@@ -183,15 +173,7 @@ async function fetchRoadForStops(stops) {
   if (!fullCoords.length) {
     stops.forEach(s => fullCoords.push(s.coords));
   }
-  
-  if (!fullCoords.length) {
-  console.warn("❌ OSRM failed, using straight line fallback for:", stops.map(s=>s.name).join(" → "));
-  stops.forEach(s => fullCoords.push(s.coords));
-}
-
-console.log("✅ fetchRoadForStops returning", fullCoords.length, "points for:", stops.map(s => s.name).join(" → "));
-return fullCoords;
-
+  return fullCoords;
 }
 
 function arraysEqual(a,b) {
@@ -208,8 +190,6 @@ function arraysEqual(a,b) {
    =========================== */
 
 function animateAlongRoad(busName, coords, marker, stops) {
-  console.log("Starting animation for", busName, "with", coords.length, "points");
-
   // ensure coords is an array and marker exists
   if (!coords || !coords.length || !marker) return;
 
@@ -221,23 +201,10 @@ let nextStopIndex = 1;
 if (stops.length > 0) {
   const firstPill = document.getElementById(`pill-${idName}-0`);
   if (firstPill) {
-  firstPill.classList.add("active");
-  const etaDiv = firstPill.querySelector(".eta");
-  if (etaDiv) etaDiv.textContent = "Arrived";
-
-  // Notification + vibrate + sound for first stop
-  if ("Notification" in window && Notification.permission === "granted") {
-    new Notification(`${busName} has started at ${stops[0].name}`);
+    firstPill.classList.add("active");
+    const etaDiv = firstPill.querySelector(".eta");
+    if (etaDiv) etaDiv.textContent = "Arrived";
   }
-  if ("vibrate" in navigator) {
-    navigator.vibrate([200, 100, 200]);
-  }
-  if (notifySound) {
-    notifySound.currentTime = 0;
-    notifySound.play().catch(err => console.warn("Sound play failed:", err));
-  }
-}
-
 }
 
 
@@ -269,30 +236,10 @@ if (stops.length > 0) {
       if (pill) {
         const etaDiv = pill.querySelector(".eta");
         if (d < ARRIVAL_THRESHOLD_M) {
-  pill.classList.add("active");
-  if (etaDiv) etaDiv.textContent = "Arrived";
-
-  // 🔔 Notification, vibration, sound for each stop
-  if ("Notification" in window && Notification.permission === "granted") {
-    try {
-      new Notification(`${busName} has arrived at ${stop.name}`);
-    } catch (e) {
-      console.warn("Notification error:", e);
-    }
-  }
-
-  if ("vibrate" in navigator) {
-    navigator.vibrate([200, 100, 200]); // vibrate pattern
-  }
-
-  if (notifySound) {
-    notifySound.currentTime = 0;
-    notifySound.play().catch(err => console.warn("Sound play failed:", err));
-  }
-
-  nextStopIndex++;
-}
-else {
+          pill.classList.add("active");
+          if (etaDiv) etaDiv.textContent = "Arrived";
+          nextStopIndex++;
+        } else {
           if (etaDiv) {
             // crude ETA estimate based on remaining distance (demo only)
             const minutes = Math.max(1, Math.round(d / 200)); // 200 m per minute
