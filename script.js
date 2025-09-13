@@ -182,7 +182,14 @@ async function fetchRoadForStops(stops) {
   if (!fullCoords.length) {
     stops.forEach(s => fullCoords.push(s.coords));
   }
-  return fullCoords;
+  if (!fullCoords.length) {
+  console.warn("❌ OSRM failed, using straight line fallback for:", stops.map(s=>s.name).join(" → "));
+  stops.forEach(s => fullCoords.push(s.coords));
+}
+
+console.log("✅ fetchRoadForStops returning", fullCoords.length, "points for:", stops.map(s => s.name).join(" → "));
+return fullCoords;
+
 }
 
 function arraysEqual(a,b) {
@@ -467,6 +474,23 @@ document.addEventListener("DOMContentLoaded", () => {
   if (btn) btn.addEventListener("click", startTracking);
   else console.warn("#trackBtn not found");
 });
+document.addEventListener("DOMContentLoaded", () => {
+  // existing initMap, populateUI, trackBtn code ...
+
+  const enableBtn = document.getElementById("enableAlerts");
+  if (enableBtn) {
+    enableBtn.addEventListener("click", () => {
+      if ("Notification" in window && Notification.permission !== "granted") {
+        Notification.requestPermission();
+      }
+      if (notifySound) {
+        notifySound.play().catch(()=>{});
+      }
+      alert("Alerts enabled ✅ Now you will get notifications, sound & vibration.");
+    });
+  }
+});
+
 
 /* ===========================
    Helpful debug export (optional)
