@@ -1,9 +1,28 @@
-// script.js — multiple routes, animated markers, timeline sync
+// /* script.js — Rewritten core logic for Track My Bus
+//    - One marker per bus, one timeline per bus
+//    - Smooth movement along real roads (OSRM) with fallback to straight segments
+//    - ETA updates and "Arrived" marking when within threshold
+//    - Populate From/To dropdowns reliably
+//    - No old setInterval jumpers, no duplicate timelines/markers
+//    - Requires: Leaflet included in HTML, an element #map, selects #fromSelect & #toSelect,
+//      #trackBtn button, and #timeline-wrap container in HTML, and bus.png in same folder
+//    - Serve over http(s) (Live Server or GitHub Pages) for OSRM fetches to work. */
 
-// ----- Data: routes (all inside Amritsar) -----
-function safeId(busName) {
-  return busName.replace(/\s+/g, '_');  // replace spaces with underscores
+
+// Ask notification permission on load
+if ("Notification" in window && Notification.permission !== "granted") {
+  Notification.requestPermission();
 }
+
+// Preload sound for notifications
+const notifySound = new Audio("notify.mp3"); // add a notify.mp3 in your project folder
+
+
+/* ===========================
+   Configuration & Routes
+   =========================== */
+
+// You can replace/extend ROUTES below with your full routes dataset.
 const ROUTES = {
   "Bus 101": {
     color: "#e74c3c",
@@ -35,265 +54,406 @@ const ROUTES = {
   }
 };
 
-// Globals
-let map;
-let activePolylines = [];
-let activeMarkers = [];
-let activeIntervals = [];
-const TIMELINE_WRAPPER = document.getElementById("timeline-wrap");
+// tweak: how close (meters) we consider "arrived"
+const ARRIVAL_THRESHOLD_M = 120;
 
-// init map
-function initMap(){
-  map = L.map('map', { scrollWheelZoom: false, zoomControl: true });
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19, attribution: '© OpenStreetMap contributors'
-  }).addTo(map);
+// how often marker steps (ms)
+const STEP_MS = 700; // 700ms per step (reasonable for demo)
+
+/* ===========================
+   Globals
+   =========================== */
+
+let map = null;
+const activePolylines = {}; // busName -> polyline
+const activeMarkers = {};   // busName -> marker
+const activeTimelines = new Set(); // busName that already has timeline created
+const activeAnimations = {}; // busName -> { timerId:..., seqIndex:... }
+
+/* ===========================
+   Utilities
+   =========================== */
+
+function safeId(name) {
+  return String(name).replace(/\s+/g, "_").replace(/[^\w\-]/g, "");
 }
 
-// populate UI: routes list and selects
-function populateUI(){
-  const routesList = document.getElementById("routesList");
-  const fromSelect = document.getElementById("fromSelect");
-  const toSelect = document.getElementById("toSelect");
-
-  routesList.innerHTML = "";
-  // gather unique stop names
-  const stopsSet = new Set();
-  Object.entries(ROUTES).forEach(([busName, r])=>{
-    // route pill
-    const li = document.createElement("li");
-    li.className = "route-pill";
-    li.textContent = busName + " — " + r.stops.map(s=>s.name).join(" → ");
-    li.onclick = ()=> {
-      // autofill first and last stops (convenient)
-      fromSelect.value = r.stops[0].name;
-      toSelect.value = r.stops[r.stops.length-1].name;
-      // optionally auto-track:
-      // startTracking();
-    };
-    routesList.appendChild(li);
-
-    r.stops.forEach(s => stopsSet.add(s.name));
-  });
-
-  // fill selects (keep existing default)
-  const stopsArr = Array.from(stopsSet).sort();
-  // clear except default
-  fromSelect.innerHTML = "<option value=''>-- choose --</option>";
-  toSelect.innerHTML   = "<option value=''>-- choose --</option>";
-  stopsArr.forEach(name=>{
-    const o1 = new Option(name,name);
-    const o2 = new Option(name,name);
-    fromSelect.add(o1); toSelect.add(o2);
-  });
+// Haversine distance (meters)
+function distanceMeters(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const toRad = x => x * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 +
+            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+            Math.sin(dLon / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
 }
 
-// utility: clear previous active things
-function clearActive(){
-  activePolylines.forEach(p=>map.removeLayer(p));
-  activeMarkers.forEach(m=>map.removeLayer(m));
-  activeIntervals.forEach(id=>clearInterval(id));
-  activePolylines = []; activeMarkers = []; activeIntervals = [];
-  TIMELINE_WRAPPER.innerHTML = "";
-}
+/* ===========================
+   Timeline UI
+   =========================== */
 
-// compute simple ETA per stop (demo): 2.5 minutes per stop
-function computeETA(index, total){
-  const minsPerStop = 3; // demo param
-  const remaining = total - 1 - index;
-  return `${remaining * minsPerStop} min`;
-}
+function createTimeline(busName, stops) {
+  const idName = safeId(busName);
+  if (activeTimelines.has(idName)) return; // already created
 
-// create timeline UI for a bus
+  const wrapper = document.getElementById("timeline-wrap");
+  if (!wrapper) {
+    console.warn("timeline-wrap element not found in DOM.");
+    return;
+  }
 
-function createTimeline(busName, stops){
   const container = document.createElement("div");
   container.className = "route-timeline";
+  container.id = `timeline-${idName}`;
+
   const title = document.createElement("div");
   title.className = "route-title";
-  title.innerText = `${busName} — stops (${stops.length})`;
+  title.innerText = `${busName} — ${stops.length} stops`;
   container.appendChild(title);
 
   const row = document.createElement("div");
   row.className = "stops-row";
+
   stops.forEach((s, i) => {
     const pill = document.createElement("div");
     pill.className = "stop-pill";
-    pill.id = `pill-${busName.replace(/\s+/g,'')}-${i}`;
-    pill.innerHTML = `<div>${s.name}</div><div class="eta">${computeETA(i,stops.length)}</div>`;
+    pill.id = `pill-${idName}-${i}`;
+    pill.innerHTML = `<div class="stop-name">${s.name}</div><div class="eta">--</div>`;
     row.appendChild(pill);
   });
+
   container.appendChild(row);
-  TIMELINE_WRAPPER.appendChild(container);
+  wrapper.appendChild(container);
+  activeTimelines.add(idName);
 }
 
-// animate marker along stops (jumps per stop, updates timeline & popup)
-function animateBus(busName, stops, marker){
-  let i = 0;
-  // highlight initial pill
-  function highlight(index){
-    // clear all pills for this bus
-    for(let k=0;k<stops.length;k++){
-      const el = document.getElementById(`pill-${busName.replace(/\s+/g,'')}-${k}`);
-      if(el) el.classList.toggle('active', k === index);
-    }
-  }
-  highlight(0);
-  marker.bindPopup(`${busName} — ${stops[0].name}`).openPopup();
+/* ===========================
+   OSRM routing per segment
+   =========================== */
 
-  // const id = setInterval(()=>{
-  //   i = (i+1) % stops.length; // loop for demo
-  //   const s = stops[i];
-  //   marker.setLatLng(s.coords);
-  //   marker.setPopupContent(`${busName} — ${s.name} <br>ETA: ${computeETA(i,stops.length)}`);
-  //   marker.openPopup();
-  //   highlight(i);
-  // }, 3000);
+// For a sequence of stops (with coords), fetch OSRM for each segment and concat all coords.
+// Returns Promise<coordsArray> where coordsArray = [[lat,lng], ...]
+async function fetchRoadForStops(stops) {
+  // If stops is small (1), return its coords
+  if (!stops || stops.length === 0) return [];
+  if (stops.length === 1) return [stops[0].coords];
 
-  // activeIntervals.push(id);
-  animateAlongRoad(busName, stops.map(s => s.coords), marker, stops);
+  let fullCoords = [];
+  for (let i = 0; i < stops.length - 1; i++) {
+    const from = stops[i].coords;
+    const to = stops[i + 1].coords;
+    const lonLatA = `${from[1]},${from[0]}`;
+    const lonLatB = `${to[1]},${to[0]}`;
+    const url = `https://router.project-osrm.org/route/v1/driving/${lonLatA};${lonLatB}?overview=full&geometries=geojson`;
 
-}
-
-// start tracking after user picks from & to
-function startTracking(){
-  const from = document.getElementById("fromSelect").value;
-  const to   = document.getElementById("toSelect").value;
-  if(!from || !to){ alert("Please choose both From and To."); return; }
-  clearActive();
-
-  const matched = [];
-  Object.entries(ROUTES).forEach(([busName, r])=>{
-    const names = r.stops.map(s=>s.name);
-    const startIdx = names.indexOf(from);
-    const endIdx = names.indexOf(to);
-    // require same direction (start before end)
-    if(startIdx !== -1 && endIdx !== -1 && startIdx < endIdx){
-      matched.push({ busName, subStops: r.stops.slice(startIdx, endIdx+1), color: r.color });
-    }
-  });
-
-  if(matched.length === 0){
-    alert("No buses found for that route inside Amritsar (demo). Try a different pair.");
-    return;
-  }
-
-  // fit map to show all matched routes
-  const allCoords = [];
-  matched.forEach(m=> m.subStops.forEach(s=> allCoords.push(s.coords)));
-  if(allCoords.length) map.fitBounds(allCoords, { padding:[60,60] });
-
-  // For each matched route: draw polyline, create marker and timeline & animate
-  matched.forEach(m=>{
-    // Build road-following path for each segment using OSRM
-let fullCoords = [];
-const fetchPromises = [];
-
-for (let j = 0; j < m.subStops.length - 1; j++) {
-  const from = m.subStops[j].coords;
-  const to = m.subStops[j+1].coords;
-  const url = `https://router.project-osrm.org/route/v1/driving/${from[1]},${from[0]};${to[1]},${to[0]}?overview=full&geometries=geojson`;
-
-  fetchPromises.push(
-    fetch(url)
-      .then(res => res.json())
-      .then(data => {
-        const segCoords = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
-        fullCoords = fullCoords.concat(segCoords);
-      })
-  );
-}
-
-Promise.all(fetchPromises).then(() => {
-  const line = L.polyline(fullCoords, { color: m.color, weight: 5, opacity: 0.8 }).addTo(map);
-  activePolylines.push(line);
-
-  // custom icon with bus.png
-  const icon = L.icon({ iconUrl: 'bus.png', iconSize: [42,42], iconAnchor:[21,42], popupAnchor:[0,-40] });
-  const marker = L.marker(fullCoords[0], { icon }).addTo(map);
-  marker.bindTooltip(m.busName, {permanent:false, direction:'top'});
-  activeMarkers.push(marker);
-  console.log("Starting animation for", m.busName, "with", fullCoords.length, "points");
-animateAlongRoad(m.busName, fullCoords, marker, m.subStops);
-
-
-  // timeline UI
-  createTimeline(m.busName, m.subStops);
-
-  
-});
-
-
-    // custom icon with bus.png
-    const icon = L.icon({ iconUrl: 'bus.png', iconSize: [42,42], iconAnchor:[21,42], popupAnchor:[0,-40] });
-    const marker = L.marker(m.subStops[0].coords, { icon }).addTo(map);
-    marker.bindTooltip(m.busName, {permanent:false, direction:'top'});
-    activeMarkers.push(marker);
-
-    // timeline UI
-    createTimeline(m.busName, m.subStops);
-
-    // animate marker & timeline
-    animateBus(m.busName.replace(/\s+/g,''), m.subStops, marker); // note id used in pills
-    // note: animateBus uses id formed from busName in createTimeline; ensure consistency
-    // But animateBus expects busName exactly as used in createTimeline; pass original
-    // small fix: we passed busName with spaces replaced; correct below in animateBus calls - handled
-  });
-
-  // small UX: scroll to timeline
-  document.getElementById('timeline-wrap').scrollIntoView({behavior:'smooth'});
-}
-
-// wire UI
-document.getElementById("trackBtn").addEventListener("click", startTracking);
-
-// On load
-initMap();
-populateUI();
-
-// expose startTracking to console if needed
-window.startTracking = startTracking;
-// Animate bus marker smoothly along the fullCoords road path
-function animateAlongRoad(busName, coords, marker, stops) {
-  const idName = busName.replace(/\s+/g, "_"); // safe id
-  let i = 0;
-  let stopIndex = 0;
-
-  function move() {
-    if (i >= coords.length) return;
-
-    const point = coords[i];
-    marker.setLatLng(point);
-
-    // --- check stop proximity and update timeline ---
-    if (stopIndex < stops.length) {
-      const stop = stops[stopIndex];
-      const pillId = `pill-${idName}-${stopIndex}`;
-      const pill = document.getElementById(pillId);
-
-      if (pill) {
-        const d = distanceMeters(
-          point[0], point[1],
-          stop.coords[0], stop.coords[1]
-        );
-        if (d < 120) { // bus reached the stop
-          pill.classList.add("active");
-          const etaDiv = pill.querySelector(".eta");
-          if (etaDiv) etaDiv.textContent = "Arrived";
-          stopIndex++;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`OSRM status ${res.status}`);
+      const data = await res.json();
+      if (data && data.routes && data.routes.length) {
+        const seg = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]); // to [lat,lng]
+        if (seg.length) {
+          // avoid duplicate point where segments meet
+          if (fullCoords.length && arraysEqual(fullCoords[fullCoords.length - 1], seg[0])) {
+            fullCoords = fullCoords.concat(seg.slice(1));
+          } else {
+            fullCoords = fullCoords.concat(seg);
+          }
         } else {
-          const etaDiv = pill.querySelector(".eta");
-          if (etaDiv) etaDiv.textContent =
-            Math.max(1, Math.round(d / 200)) + " min";
+          // fallback to straight line if geometry empty
+          if (!fullCoords.length) fullCoords.push(from);
+          fullCoords.push(to);
+        }
+      } else {
+        // fallback straight
+        if (!fullCoords.length) fullCoords.push(from);
+        fullCoords.push(to);
+      }
+    } catch (err) {
+      console.warn("OSRM fetch failed for segment — falling back to straight:", err);
+      if (!fullCoords.length) fullCoords.push(from);
+      fullCoords.push(to);
+    }
+  }
+  // If still empty (shouldn't), fill with stops coords
+  if (!fullCoords.length) {
+    stops.forEach(s => fullCoords.push(s.coords));
+  }
+  return fullCoords;
+}
+
+function arraysEqual(a,b) {
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  for (let i=0;i<a.length;i++){
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+/* ===========================
+   Marker animation (smooth along coords)
+   =========================== */
+
+function animateAlongRoad(busName, coords, marker, stops) {
+  // ensure coords is an array and marker exists
+  if (!coords || !coords.length || !marker) return;
+
+  const idName = safeId(busName);
+  let idx = 0;
+
+// Mark first stop as arrived immediately
+let nextStopIndex = 1; 
+if (stops.length > 0) {
+  const firstPill = document.getElementById(`pill-${idName}-0`);
+  if (firstPill) {
+  firstPill.classList.add("active");
+  const etaDiv = firstPill.querySelector(".eta");
+  if (etaDiv) etaDiv.textContent = "Arrived";
+
+  // Notification + vibrate + sound for first stop
+  if ("Notification" in window && Notification.permission === "granted") {
+    new Notification(`${busName} has started at ${stops[0].name}`);
+  }
+  if ("vibrate" in navigator) {
+    navigator.vibrate([200, 100, 200]);
+  }
+  if (notifySound) {
+    notifySound.currentTime = 0;
+    notifySound.play().catch(err => console.warn("Sound play failed:", err));
+  }
+}
+
+}
+
+
+  // clear previous if any
+  if (activeAnimations[idName] && activeAnimations[idName].timerId) {
+    clearTimeout(activeAnimations[idName].timerId);
+  }
+
+  function step() {
+    if (idx >= coords.length) {
+      // end reached; keep marker at last point
+      // optionally loop: idx = 0; nextStopIndex = 0; step();
+      return;
+    }
+
+    const p = coords[idx];
+    marker.setLatLng(p);
+
+    // update popup occasionally (less frequent)
+    if (idx % 10 === 0) {
+      marker.setPopupContent(`${busName} — moving`);
+    }
+
+    // proximity check for next stop
+    if (nextStopIndex < stops.length) {
+      const stop = stops[nextStopIndex];
+      const d = distanceMeters(p[0], p[1], stop.coords[0], stop.coords[1]);
+      const pill = document.getElementById(`pill-${idName}-${nextStopIndex}`);
+      if (pill) {
+        const etaDiv = pill.querySelector(".eta");
+        if (d < ARRIVAL_THRESHOLD_M) {
+          pill.classList.add("active");
+          if (etaDiv) etaDiv.textContent = "Arrived";
+          nextStopIndex++;
+        } else {
+          if (etaDiv) {
+            // crude ETA estimate based on remaining distance (demo only)
+            const minutes = Math.max(1, Math.round(d / 200)); // 200 m per minute
+            etaDiv.textContent = `${minutes} min`;
+          }
         }
       }
     }
 
-    i++;
-    setTimeout(move, 1000); // smoother movement speed
+    idx++;
+    activeAnimations[idName] = { timerId: setTimeout(step, STEP_MS) };
   }
 
-  move();
+  step();
 }
 
+/* ===========================
+   Map and UI bootstrap
+   =========================== */
 
+function initMap() {
+  map = L.map("map", { scrollWheelZoom: false }).setView([31.6340, 74.8723], 13);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: "© OpenStreetMap contributors"
+  }).addTo(map);
+
+  // Add zoom control positioned (optional)
+  L.control.zoom({ position: "topright" }).addTo(map);
+}
+
+function populateUI() {
+  const fromSelect = document.getElementById("fromSelect");
+  const toSelect = document.getElementById("toSelect");
+  const routesList = document.getElementById("routesList");
+
+  if (!fromSelect || !toSelect || !routesList) {
+    console.warn("populateUI: necessary DOM elements not found");
+    return;
+  }
+
+  // fill From/To with unique stops present across ROUTES
+  const stopsSet = new Set();
+  Object.values(ROUTES).forEach(r => r.stops.forEach(s => stopsSet.add(s.name)));
+
+  // Clear existing
+  fromSelect.innerHTML = "<option value=''>-- choose --</option>";
+  toSelect.innerHTML = "<option value=''>-- choose --</option>";
+  routesList.innerHTML = "";
+
+  Array.from(stopsSet).sort().forEach(stopName => {
+    const o1 = document.createElement("option");
+    o1.value = stopName; o1.textContent = stopName;
+    fromSelect.appendChild(o1);
+
+    const o2 = document.createElement("option");
+    o2.value = stopName; o2.textContent = stopName;
+    toSelect.appendChild(o2);
+  });
+
+  // quick-route pills (click to autofill)
+  Object.entries(ROUTES).forEach(([busName, r]) => {
+    const li = document.createElement("li");
+    li.className = "route-pill";
+    li.textContent = `${busName} — ${r.stops.map(s => s.name).join(" → ")}`;
+    li.onclick = () => {
+      fromSelect.value = r.stops[0].name;
+      toSelect.value = r.stops[r.stops.length - 1].name;
+    };
+    routesList.appendChild(li);
+  });
+}
+
+// Clear previous visuals (polylines, markers, animations)
+function clearActiveVisuals() {
+  Object.values(activePolylines).forEach(p => {
+    try { map.removeLayer(p); } catch(e){}
+  });
+  Object.values(activeMarkers).forEach(m => {
+    try { map.removeLayer(m); } catch(e){}
+  });
+  // clear animation timers
+  Object.values(activeAnimations).forEach(a => {
+    if (a && a.timerId) clearTimeout(a.timerId);
+  });
+
+  // reset containers
+  for (const k in activePolylines) delete activePolylines[k];
+  for (const k in activeMarkers) delete activeMarkers[k];
+  for (const k in activeAnimations) delete activeAnimations[k];
+
+  // clear timeline DOM and set
+  const wrapper = document.getElementById("timeline-wrap");
+  if (wrapper) wrapper.innerHTML = "";
+  activeTimelines.clear();
+}
+
+/* ===========================
+   Main: handle Track button
+   =========================== */
+
+async function startTracking() {
+  const from = document.getElementById("fromSelect").value;
+  const to = document.getElementById("toSelect").value;
+
+  if (!from || !to) {
+    alert("Please select both From and To stops.");
+    return;
+  }
+
+  // find matching routes with correct direction
+  const matched = [];
+  Object.entries(ROUTES).forEach(([busName, r]) => {
+    const names = r.stops.map(s => s.name);
+    const startIdx = names.indexOf(from);
+    const endIdx = names.indexOf(to);
+    if (startIdx !== -1 && endIdx !== -1 && startIdx < endIdx) {
+      // use subStops between startIdx and endIdx inclusive
+      const subStops = r.stops.slice(startIdx, endIdx + 1);
+      matched.push({ busName, color: r.color, subStops });
+    }
+  });
+
+  if (!matched.length) {
+    alert("No buses found for that route inside Amritsar (demo). Try different pair.");
+    return;
+  }
+
+  // clear previous visuals
+  clearActiveVisuals();
+
+  // compute all coords to fit map
+  const allCoords = [];
+  for (const m of matched) m.subStops.forEach(s => allCoords.push(s.coords));
+  if (allCoords.length) {
+    try { map.fitBounds(allCoords, { padding: [60, 60] }); } catch (e) {}
+  }
+
+  // for each matched route: fetch road coords, draw polyline, create marker + timeline, animate
+  for (const m of matched) {
+    const busName = m.busName;
+    try {
+      // 1) create timeline first (ensures pills exist before animation)
+      createTimeline(busName, m.subStops);
+
+      // 2) fetch road-following coords (OSRM)
+      const fullCoords = await fetchRoadForStops(m.subStops);
+
+      // 3) draw polyline
+      const polyline = L.polyline(fullCoords, { color: m.color, weight: 5, opacity: 0.9 }).addTo(map);
+      activePolylines[safeId(busName)] = polyline;
+
+      // 4) create single marker for this bus
+      const icon = L.icon({ iconUrl: "bus.png", iconSize: [42, 42], iconAnchor: [21, 42], popupAnchor: [0, -40] });
+      const marker = L.marker(fullCoords[0], { icon }).addTo(map);
+      marker.bindTooltip(busName, { permanent: false, direction: "top" });
+      marker.bindPopup(`${busName} — ${m.subStops[0].name}`);
+      activeMarkers[safeId(busName)] = marker;
+
+      // 5) animate marker along the fullCoords and sync timeline
+      animateAlongRoad(busName, fullCoords, marker, m.subStops);
+    } catch (err) {
+      console.error("Failed setup for", m.busName, err);
+    }
+  }
+
+  // bring timeline into view for demo
+  const tw = document.getElementById("timeline-wrap");
+  if (tw) tw.scrollIntoView({ behavior: "smooth" });
+}
+
+/* ===========================
+   DOM ready bootstrap
+   =========================== */
+
+document.addEventListener("DOMContentLoaded", () => {
+  // initialize UI and map
+  initMap();
+  populateUI();
+
+  // wire the Track button
+  const btn = document.getElementById("trackBtn");
+  if (btn) btn.addEventListener("click", startTracking);
+  else console.warn("#trackBtn not found");
+});
+
+/* ===========================
+   Helpful debug export (optional)
+   =========================== */
+window._trackMyBusDebug = {
+  ROUTES,
+  activePolylines,
+  activeMarkers,
+  activeAnimations
+};
