@@ -10,6 +10,7 @@
 
 
 // Ask notification permission on load
+
 if ("Notification" in window && Notification.permission !== "granted") {
   Notification.requestPermission();
 }
@@ -182,6 +183,7 @@ async function fetchRoadForStops(stops) {
   if (!fullCoords.length) {
     stops.forEach(s => fullCoords.push(s.coords));
   }
+  
   if (!fullCoords.length) {
   console.warn("❌ OSRM failed, using straight line fallback for:", stops.map(s=>s.name).join(" → "));
   stops.forEach(s => fullCoords.push(s.coords));
@@ -206,6 +208,8 @@ function arraysEqual(a,b) {
    =========================== */
 
 function animateAlongRoad(busName, coords, marker, stops) {
+  console.log("Starting animation for", busName, "with", coords.length, "points");
+
   // ensure coords is an array and marker exists
   if (!coords || !coords.length || !marker) return;
 
@@ -268,21 +272,19 @@ if (stops.length > 0) {
   pill.classList.add("active");
   if (etaDiv) etaDiv.textContent = "Arrived";
 
-  // 🔔 Safe notification (desktop works, mobile won't break loop)
-  try {
-    if ("Notification" in window && Notification.permission === "granted") {
+  // 🔔 Notification, vibration, sound for each stop
+  if ("Notification" in window && Notification.permission === "granted") {
+    try {
       new Notification(`${busName} has arrived at ${stop.name}`);
+    } catch (e) {
+      console.warn("Notification error:", e);
     }
-  } catch (e) {
-    console.warn("Notification blocked on mobile, continuing animation:", e);
   }
 
-  // 📳 Vibrate (if supported)
   if ("vibrate" in navigator) {
-    navigator.vibrate([200, 100, 200]);
+    navigator.vibrate([200, 100, 200]); // vibrate pattern
   }
 
-  // 🔊 Play sound (safe after user taps once on page)
   if (notifySound) {
     notifySound.currentTime = 0;
     notifySound.play().catch(err => console.warn("Sound play failed:", err));
@@ -290,7 +292,6 @@ if (stops.length > 0) {
 
   nextStopIndex++;
 }
-
 else {
           if (etaDiv) {
             // crude ETA estimate based on remaining distance (demo only)
@@ -477,23 +478,6 @@ document.addEventListener("DOMContentLoaded", () => {
   if (btn) btn.addEventListener("click", startTracking);
   else console.warn("#trackBtn not found");
 });
-document.addEventListener("DOMContentLoaded", () => {
-  // existing initMap, populateUI, trackBtn code ...
-
-  const enableBtn = document.getElementById("enableAlerts");
-  if (enableBtn) {
-    enableBtn.addEventListener("click", () => {
-      if ("Notification" in window && Notification.permission !== "granted") {
-        Notification.requestPermission();
-      }
-      if (notifySound) {
-        notifySound.play().catch(()=>{});
-      }
-      alert("Alerts enabled ✅ Now you will get notifications, sound & vibration.");
-    });
-  }
-});
-
 
 /* ===========================
    Helpful debug export (optional)
