@@ -258,10 +258,30 @@ if (stops.length > 0) {
       if (pill) {
         const etaDiv = pill.querySelector(".eta");
         if (d < ARRIVAL_THRESHOLD_M) {
-          pill.classList.add("active");
-          if (etaDiv) etaDiv.textContent = "Arrived";
-          nextStopIndex++;
-        } else {
+  pill.classList.add("active");
+  if (etaDiv) etaDiv.textContent = "Arrived";
+
+  // 🔔 Notification, vibration, sound for each stop
+  if ("Notification" in window && Notification.permission === "granted") {
+    try {
+      new Notification(`${busName} has arrived at ${stop.name}`);
+    } catch (e) {
+      console.warn("Notification error:", e);
+    }
+  }
+
+  if ("vibrate" in navigator) {
+    navigator.vibrate([200, 100, 200]); // vibrate pattern
+  }
+
+  if (notifySound) {
+    notifySound.currentTime = 0;
+    notifySound.play().catch(err => console.warn("Sound play failed:", err));
+  }
+
+  nextStopIndex++;
+}
+else {
           if (etaDiv) {
             // crude ETA estimate based on remaining distance (demo only)
             const minutes = Math.max(1, Math.round(d / 200)); // 200 m per minute
