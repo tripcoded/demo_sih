@@ -268,19 +268,21 @@ if (stops.length > 0) {
   pill.classList.add("active");
   if (etaDiv) etaDiv.textContent = "Arrived";
 
-  // 🔔 Notification, vibration, sound for each stop
-  if ("Notification" in window && Notification.permission === "granted") {
-    try {
+  // 🔔 Safe notification (desktop works, mobile won't break loop)
+  try {
+    if ("Notification" in window && Notification.permission === "granted") {
       new Notification(`${busName} has arrived at ${stop.name}`);
-    } catch (e) {
-      console.warn("Notification error:", e);
     }
+  } catch (e) {
+    console.warn("Notification blocked on mobile, continuing animation:", e);
   }
 
+  // 📳 Vibrate (if supported)
   if ("vibrate" in navigator) {
-    navigator.vibrate([200, 100, 200]); // vibrate pattern
+    navigator.vibrate([200, 100, 200]);
   }
 
+  // 🔊 Play sound (safe after user taps once on page)
   if (notifySound) {
     notifySound.currentTime = 0;
     notifySound.play().catch(err => console.warn("Sound play failed:", err));
@@ -288,6 +290,7 @@ if (stops.length > 0) {
 
   nextStopIndex++;
 }
+
 else {
           if (etaDiv) {
             // crude ETA estimate based on remaining distance (demo only)
